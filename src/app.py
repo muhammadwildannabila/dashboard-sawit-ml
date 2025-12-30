@@ -4,8 +4,6 @@
 import io
 import json
 import zipfile
-import os
-import sys
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
@@ -21,46 +19,33 @@ import plotly.graph_objects as go
 # Optional heavy deps (UI tetap hidup walau env belum lengkap)
 try:
     import joblib
-    JOBLIB_AVAILABLE = True
 except Exception:
     joblib = None
-    JOBLIB_AVAILABLE = False
 
 try:
     import cv2
-    CV2_AVAILABLE = True
 except Exception:
     cv2 = None
-    CV2_AVAILABLE = False
 
 try:
     import tensorflow as tf
-    TF_AVAILABLE = True
 except Exception:
     tf = None
-    TF_AVAILABLE = False
 
 try:
     import torch
     import timm
     import torchvision.transforms as T
-    TORCH_AVAILABLE = True
 except Exception:
     torch = None
     timm = None
     T = None
-    TORCH_AVAILABLE = False
 
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
-st.set_page_config(
-    page_title="SawitScope • Ripeness", 
-    page_icon="🌴", 
-    layout="wide", 
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="SawitScope • Ripeness", page_icon="🌴", layout="wide", initial_sidebar_state="expanded")
 
 
 # =========================================================
@@ -76,7 +61,7 @@ MUTED = "rgba(245,248,255,0.68)"
 ORANGE = "#FF7A1A"
 GOLD = "#FFB000"
 RED = "#FF3B4E"
-GREEN = "#2EE59D"  # hanya untuk kelas Mentah biar "kebun" terasa, tapi aksen UI tetap orange/gold.
+GREEN = "#2EE59D"  # hanya untuk kelas Mentah biar “kebun” terasa, tapi aksen UI tetap orange/gold.
 
 # Map warna kelas (konsisten di semua chart!)
 CLASS_LABELS = ["Mentah", "Matang", "Busuk"]
@@ -403,30 +388,10 @@ MODEL_ORDER = ["MaxViT-T + LoRA", "EfficientNet-B0 + LoRA", "XGBoost + HSV Color
 
 
 # =========================================================
-# FILES (model artifacts untuk inferensi) - FIXED PATH
+# FILES (model artifacts untuk inferensi)
 # =========================================================
-# Cari path model yang benar
-BASE_DIR = Path(__file__).resolve().parent
-
-# Cek beberapa lokasi yang mungkin
-POSSIBLE_MODEL_PATHS = [
-    BASE_DIR / "sawit_models",  # Folder di directory yang sama
-    BASE_DIR.parent / "sawit_models",  # Folder di parent directory
-    Path.cwd() / "sawit_models",  # Folder di current working directory
-    BASE_DIR,  # Folder yang sama dengan script
-]
-
-MODELS_DIR = None
-for path in POSSIBLE_MODEL_PATHS:
-    if path.exists():
-        MODELS_DIR = path
-        break
-
-if MODELS_DIR is None:
-    # Buat folder jika tidak ada
-    MODELS_DIR = BASE_DIR / "sawit_models"
-    MODELS_DIR.mkdir(exist_ok=True)
-    st.warning(f"📁 Folder model dibuat di: {MODELS_DIR}")
+BASE_DIR = Path(__file__).resolve().parent   # .../src
+MODELS_DIR = BASE_DIR.parent / "sawit_models"
 
 FILES = {
     "class_names": MODELS_DIR / "class_names.json",
@@ -440,32 +405,6 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png"}
 
 
 # =========================================================
-# DUMMY MODEL untuk fallback
-# =========================================================
-class DummyXGBModel:
-    """Model dummy untuk XGBoost"""
-    def predict_proba(self, x):
-        return np.array([[0.33, 0.33, 0.34]])
-
-class DummyEffNetModel:
-    """Model dummy untuk EfficientNet"""
-    def predict(self, x):
-        return np.array([[0.33, 0.33, 0.34]])
-
-class DummyMaxViTModel:
-    """Model dummy untuk MaxViT"""
-    def eval(self):
-        return self
-    
-    def to(self, device):
-        return self
-    
-    def __call__(self, x):
-        import torch
-        return torch.tensor([[0.33, 0.33, 0.34]])
-
-
-# =========================================================
 # FIXED: Small helpers (simplified untuk compatibility)
 # =========================================================
 def _img_show(img, caption=None):
@@ -474,7 +413,7 @@ def _img_show(img, caption=None):
 
 def _df_show(df: pd.DataFrame):
     """Simple dataframe display - fixed for Streamlit Cloud"""
-    st.dataframe(df, hide_index=True, use_container_width=True)
+    st.dataframe(df, hide_index=True)
 
 
 # =========================================================
@@ -511,18 +450,14 @@ def pred_badge(label: str) -> str:
 
 @st.cache_data
 def load_class_names(path: Path) -> List[str]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict):
-            keys = list(data.keys())
-            if all(str(k).isdigit() for k in keys):
-                return [data[str(i)] for i in range(len(keys))]
-            return list(data.values())
-        return data
-    except:
-        # Return default jika file tidak ada
-        return ["unripe", "ripe", "rotten"]
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if isinstance(data, dict):
+        keys = list(data.keys())
+        if all(str(k).isdigit() for k in keys):
+            return [data[str(i)] for i in range(len(keys))]
+        return list(data.values())
+    return data
 
 def topk(prob: np.ndarray, class_names: List[str], k: int = 3) -> List[Tuple[str, float]]:
     idx = np.argsort(prob)[::-1][:k]
@@ -559,27 +494,17 @@ def require_files(paths: List[Path]) -> List[str]:
 
 
 # =========================================================
-# MODEL LOADERS (inferensi) - FIXED
+# MODEL LOADERS (inferensi)
 # =========================================================
 @st.cache_resource
 def load_xgb():
-    if not JOBLIB_AVAILABLE:
-        st.warning("Joblib tidak tersedia, menggunakan model dummy")
-        return DummyXGBModel(), {"classes": ["unripe", "ripe", "rotten"], "img_size": [160, 160]}
-    
-    try:
-        xgb = joblib.load(str(FILES["xgb_model"]))
-        meta = joblib.load(str(FILES["xgb_meta"]))
-        return xgb, meta
-    except Exception as e:
-        st.warning(f"Gagal load XGBoost model: {e}, menggunakan model dummy")
-        return DummyXGBModel(), {"classes": ["unripe", "ripe", "rotten"], "img_size": [160, 160]}
+    if joblib is None:
+        raise RuntimeError("Dependency missing: joblib. Install joblib + xgboost + scikit-learn.")
+    xgb = joblib.load(str(FILES["xgb_model"]))
+    meta = joblib.load(str(FILES["xgb_meta"]))
+    return xgb, meta
 
 def color_features_hsv(img_bgr: np.ndarray) -> np.ndarray:
-    if not CV2_AVAILABLE:
-        # Return dummy features jika OpenCV tidak tersedia
-        return np.random.randn(16*3 + 3 + 3).astype(np.float32)
-    
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     h_hist = cv2.calcHist([hsv], [0], None, [16], [0, 180]).flatten()
     s_hist = cv2.calcHist([hsv], [1], None, [16], [0, 256]).flatten()
@@ -592,85 +517,49 @@ def color_features_hsv(img_bgr: np.ndarray) -> np.ndarray:
     return np.concatenate([h_hist, s_hist, v_hist, mean, std]).astype(np.float32)
 
 def xgb_predict(pil_img: Image.Image, xgb, meta) -> Tuple[str, float, np.ndarray, List[str]]:
-    classes = meta.get("classes", ["unripe", "ripe", "rotten"])
+    if cv2 is None:
+        raise RuntimeError("Dependency missing: opencv-python(-headless).")
+    classes = meta.get("classes", [])
     img_size = tuple(meta.get("img_size", [160, 160]))
 
     rgb = np.array(pil_img.convert("RGB"))
-    
-    if CV2_AVAILABLE:
-        rgb = cv2.resize(rgb, img_size)
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        feat = color_features_hsv(bgr).reshape(1, -1)
-    else:
-        # Resize dengan PIL jika OpenCV tidak tersedia
-        pil_img_resized = pil_img.resize(img_size)
-        rgb_resized = np.array(pil_img_resized)
-        # Buat dummy features
-        feat = np.random.randn(1, 16*3 + 3 + 3).astype(np.float32)
-    
+    rgb = cv2.resize(rgb, img_size)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    feat = color_features_hsv(bgr).reshape(1, -1)
     prob = xgb.predict_proba(feat)[0]
     idx = int(np.argmax(prob))
     return classes[idx], float(prob[idx]), prob, classes
 
 @st.cache_resource
 def load_effnet():
-    if not TF_AVAILABLE:
-        st.warning("TensorFlow tidak tersedia, menggunakan model dummy")
-        return DummyEffNetModel()
-    
-    try:
-        # Coba load dengan berbagai cara
-        if hasattr(tf.keras.models, 'load_model'):
-            model = tf.keras.models.load_model(str(FILES["effnet"]), compile=False)
-            return model
-        else:
-            # Fallback untuk Keras standalone
-            import keras
-            model = keras.models.load_model(str(FILES["effnet"]), compile=False)
-            return model
-    except Exception as e:
-        st.warning(f"Gagal load EfficientNet model: {e}, menggunakan model dummy")
-        return DummyEffNetModel()
+    if tf is None:
+        raise RuntimeError("Dependency missing: tensorflow.")
+    return tf.keras.models.load_model(str(FILES["effnet"]))
 
 def effnet_predict(pil_img: Image.Image, model, class_names: List[str]) -> Tuple[str, float, np.ndarray]:
     img = pil_img.convert("RGB").resize((160, 160))
     x = (np.array(img).astype("float32") / 255.0)[None, ...]
-    
-    if isinstance(model, DummyEffNetModel):
-        prob = model.predict(x)[0]
-    else:
-        prob = model.predict(x, verbose=0)[0]
-    
+    prob = model.predict(x, verbose=0)[0]
     idx = int(np.argmax(prob))
     return class_names[idx], float(prob[idx]), prob
 
 @st.cache_resource
 def load_maxvit():
-    if not TORCH_AVAILABLE:
-        st.warning("PyTorch tidak tersedia, menggunakan model dummy")
-        return DummyMaxViTModel(), ["unripe", "ripe", "rotten"], 224
-    
-    try:
-        ckpt = torch.load(str(FILES["maxvit"]), map_location="cpu")
-        arch = ckpt["arch"]
-        classes = ckpt["classes"]
-        img_size = int(ckpt.get("img_size", 224))
+    if torch is None or timm is None or T is None:
+        raise RuntimeError("Dependency missing: torch + timm + torchvision.")
+    ckpt = torch.load(str(FILES["maxvit"]), map_location="cpu")
+    arch = ckpt["arch"]
+    classes = ckpt["classes"]
+    img_size = int(ckpt.get("img_size", 224))
 
-        model = timm.create_model(arch, pretrained=False, num_classes=len(classes))
-        model.load_state_dict(ckpt["state_dict"], strict=True)
-        model.eval()
-        return model, classes, img_size
-    except Exception as e:
-        st.warning(f"Gagal load MaxViT model: {e}, menggunakan model dummy")
-        return DummyMaxViTModel(), ["unripe", "ripe", "rotten"], 224
+    model = timm.create_model(arch, pretrained=False, num_classes=len(classes))
+    model.load_state_dict(ckpt["state_dict"], strict=True)
+    model.eval()
+    return model, classes, img_size
 
 def maxvit_predict(pil_img: Image.Image, model, class_names: List[str], img_size: int) -> Tuple[str, float, np.ndarray]:
-    if isinstance(model, DummyMaxViTModel):
-        prob = np.array([0.33, 0.33, 0.34])
-        idx = np.argmax(prob)
-        return class_names[idx], float(prob[idx]), prob
-    
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if (torch is not None and torch.cuda.is_available()) else "cpu"
     model = model.to(device)
     tfm = T.Compose([T.Resize((img_size, img_size)), T.ToTensor()])
     x = tfm(pil_img.convert("RGB")).unsqueeze(0).to(device)
@@ -838,8 +727,7 @@ with st.sidebar:
             "📦 Prediksi Massal",
             "⚔️ Perbandingan Model",
             "📊 Insight & Analisis",
-            "ℹ️ Informasi Proyek",
-            "🔧 System Info"  # Ditambahkan menu System Info
+            "ℹ️ Informasi Proyek"
         ],
         index=0,
         label_visibility="collapsed"
@@ -920,162 +808,76 @@ with st.sidebar:
         delta="+running"
     )
 
-
 # =========================================================
 # Load class names for TF display (wajib untuk effnet)
 # =========================================================
 missing_base = require_files([FILES["class_names"]])
 if missing_base:
-    st.sidebar.warning("⚠️ File `class_names.json` belum ada.")
+    st.warning("File `class_names.json` belum ada. Dashboard tetap jalan, tapi inferensi EffNet butuh file ini.")
     class_names_global = ["unripe", "ripe", "rotten"]
 else:
     class_names_global = load_class_names(FILES["class_names"])
 
 
 # =========================================================
-# Global variables untuk model
+# Load model sesuai pilihan (lazy)
 # =========================================================
-xgb_obj = None
-meta_obj = None
-eff_obj = None
-maxvit_obj = None
-maxvit_classes = None
-maxvit_img = 224
 err_model = None
+xgb_obj = meta_obj = None
+eff_obj = None
+maxvit_obj = maxvit_classes = None
+maxvit_img = 224
 
-# Cek file yang dibutuhkan berdasarkan model yang dipilih
-def check_required_files():
-    """Cek file yang dibutuhkan berdasarkan model choice"""
-    required = [FILES["class_names"]]
-    
-    if model_choice.startswith("XGBoost"):
-        required += [FILES["xgb_model"], FILES["xgb_meta"]]
-    elif model_choice.startswith("EfficientNet"):
-        required += [FILES["effnet"]]
-    elif model_choice.startswith("MaxViT"):
-        required += [FILES["maxvit"]]
-    
-    missing = require_files(required)
-    return missing
+need = [FILES["class_names"]]
+if model_choice.startswith("XGBoost"):
+    need += [FILES["xgb_model"], FILES["xgb_meta"]]
+elif model_choice.startswith("EfficientNet"):
+    need += [FILES["effnet"]]
+else:
+    need += [FILES["maxvit"]]
 
-# Inisialisasi MODEL_READY
-missing_files = check_required_files()
-MODEL_READY = (len(missing_files) == 0)
+missing = require_files([p for p in need if p is not None])
+# kalau model file belum ada, jangan stop total—stop hanya di halaman predict/batch/arena
+MODEL_READY = (len(missing) == 0)
 
 
-# =========================================================
-# Load model sesuai pilihan
-# =========================================================
-def ensure_model_loaded():
-    """Load model berdasarkan pilihan di sidebar"""
-    global xgb_obj, meta_obj, eff_obj, maxvit_obj, maxvit_classes, maxvit_img, err_model
-    
-    try:
-        if model_choice.startswith("XGBoost"):
-            if xgb_obj is None or meta_obj is None:
-                xgb_obj, meta_obj = load_xgb()
-                st.sidebar.success(f"✅ {model_choice} loaded")
-                
-        elif model_choice.startswith("EfficientNet"):
-            if eff_obj is None:
-                eff_obj = load_effnet()
-                st.sidebar.success(f"✅ {model_choice} loaded")
-                
-        elif model_choice.startswith("MaxViT"):
-            if maxvit_obj is None:
-                maxvit_obj, maxvit_classes, maxvit_img = load_maxvit()
-                st.sidebar.success(f"✅ {model_choice} loaded")
-                
-    except Exception as e:
-        err_model = str(e)
-        st.sidebar.error(f"❌ Gagal load {model_choice}: {str(e)}")
-
-
-# =========================================================
-# Fungsi prediksi utama - FIXED
-# =========================================================
 def predict_one(pil_img: Image.Image) -> Dict[str, Any]:
-    """Prediksi gambar dengan model yang dipilih"""
-    
-    # Jika model tidak ready, gunakan dummy
     if not MODEL_READY:
-        # Return dummy prediction
-        dummy_probs = np.array([0.33, 0.33, 0.34])
-        idx = np.argmax(dummy_probs)
-        return {
-            "pred_label": CLASS_LABELS[idx],
-            "confidence": 0.33,
-            "margin": 0.01,
-            "top3": [(CLASS_LABELS[i], float(dummy_probs[i])) for i in range(3)],
-            "low_conf": True,
-            "ambiguous": True,
-        }
-    
-    # Pastikan model sudah diload
-    ensure_model_loaded()
-    
-    try:
-        if model_choice.startswith("XGBoost"):
-            if xgb_obj is None or meta_obj is None:
-                raise ValueError("XGBoost model belum diload")
-            
-            label, conf, prob, cn = xgb_predict(pil_img, xgb_obj, meta_obj)
-            class_names = cn
-            
-        elif model_choice.startswith("EfficientNet"):
-            if eff_obj is None:
-                raise ValueError("EfficientNet model belum diload")
-            
-            label, conf, prob = effnet_predict(pil_img, eff_obj, class_names_global)
-            class_names = class_names_global
-            
-        else:  # MaxViT
-            if maxvit_obj is None:
-                raise ValueError("MaxViT model belum diload")
-            
-            label, conf, prob = maxvit_predict(pil_img, maxvit_obj, maxvit_classes, maxvit_img)
-            class_names = maxvit_classes
-        
-        # Process results
-        prob = np.array(prob, dtype=float)
-        idx_sorted = np.argsort(prob)[::-1]
-        
-        top1_label = class_names[int(idx_sorted[0])]
-        top1_conf = float(prob[int(idx_sorted[0])])
-        
-        if len(prob) > 1:
-            top2_conf = float(prob[int(idx_sorted[1])])
-            margin = top1_conf - top2_conf
-        else:
-            margin = 0.0
-        
-        # Get top 3 predictions
-        top3 = []
-        for i in range(min(3, len(prob))):
-            lbl = class_names[int(idx_sorted[i])]
-            conf_val = float(prob[int(idx_sorted[i])])
-            top3.append((safe_label(lbl), conf_val))
-        
-        return {
-            "pred_label": safe_label(label),
-            "confidence": float(conf),
-            "margin": margin,
-            "top3": top3,
-            "low_conf": float(conf) < conf_th,
-            "ambiguous": margin < margin_th,
-        }
-        
-    except Exception as e:
-        st.error(f"Error saat prediksi: {str(e)}")
-        # Return default values
-        return {
-            "pred_label": "ERROR",
-            "confidence": 0.0,
-            "margin": 0.0,
-            "top3": [],
-            "low_conf": True,
-            "ambiguous": True,
-        }
+        raise RuntimeError("Model belum lengkap. Lengkapi file model di folder sawit_models/.")
+
+    if model_choice.startswith("XGBoost"):
+        if xgb_obj is None:
+            raise RuntimeError("XGB not loaded")
+        label, conf, prob, cn = xgb_predict(pil_img, xgb_obj, meta_obj)
+        class_names = cn
+    elif model_choice.startswith("EfficientNet"):
+        if eff_obj is None:
+            raise RuntimeError("EffNet not loaded")
+        label, conf, prob = effnet_predict(pil_img, eff_obj, class_names_global)
+        class_names = class_names_global
+    else:
+        if maxvit_obj is None:
+            raise RuntimeError("MaxViT not loaded")
+        label, conf, prob = maxvit_predict(pil_img, maxvit_obj, maxvit_classes, maxvit_img)
+        class_names = maxvit_classes
+
+    prob = np.array(prob, dtype=float)
+    idx_sorted = np.argsort(prob)[::-1]
+    top1 = (class_names[int(idx_sorted[0])], float(prob[int(idx_sorted[0])]))
+    top2 = (class_names[int(idx_sorted[1])], float(prob[int(idx_sorted[1])])) if len(prob) > 1 else ("-", 0.0)
+    m = float(top1[1] - top2[1])
+
+    low_conf = float(conf) < conf_th
+    ambiguous = m < margin_th
+
+    return {
+        "pred_label": safe_label(label),
+        "confidence": float(conf),
+        "margin": m,
+        "top3": [(safe_label(lbl), p) for (lbl, p) in topk(prob, class_names, k=3)],
+        "low_conf": low_conf,
+        "ambiguous": ambiguous,
+    }
 
 
 # =========================================================
@@ -1096,6 +898,27 @@ def get_items(mode_choice: str) -> List[Tuple[str, Image.Image]]:
         if zf is not None:
             items = extract_images_from_zip(zf.read())
     return items
+
+
+# =========================================================
+# Load model only when needed (Predict/Batch/Arena)
+# =========================================================
+def ensure_model_loaded():
+    global xgb_obj, meta_obj, eff_obj, maxvit_obj, maxvit_classes, maxvit_img, err_model, MODEL_READY
+
+    if not MODEL_READY:
+        return
+
+    try:
+        if model_choice.startswith("XGBoost") and xgb_obj is None:
+            xgb_obj, meta_obj = load_xgb()
+        elif model_choice.startswith("EfficientNet") and eff_obj is None:
+            eff_obj = load_effnet()
+        elif model_choice.startswith("MaxViT") and maxvit_obj is None:
+            maxvit_obj, maxvit_classes, maxvit_img = load_maxvit()
+    except Exception as e:
+        err_model = str(e)
+        MODEL_READY = False
 
 
 # =========================================================
@@ -1256,195 +1079,153 @@ elif nav == "🧭 Panduan Pengguna":
 
 
 # =========================================================
-# PAGE: PREDICT - FIXED
+# PAGE: PREDICT
 # =========================================================
 elif nav == "🔮 Prediksi Tunggal":
     st.markdown('<div class="card"><div class="cardTitle">🔮 Prediksi Kematangan</div>'
                 '<div class="small">Upload gambar → lihat label, confidence, margin Top1–Top2, dan Top-3.</div></div>',
                 unsafe_allow_html=True)
     st.write("")
-    
-    # Debug info
-    with st.expander("🔧 Model Status", expanded=False):
-        st.write(f"**Model yang dipilih:** {model_choice}")
-        st.write(f"**MODEL_READY:** {MODEL_READY}")
-        
-        if missing_files:
-            st.error("❌ File yang hilang:")
-            for m in missing_files:
+
+    if not MODEL_READY:
+        st.error("Model/dependency belum siap untuk inferensi.")
+        if missing:
+            st.write("Missing files:")
+            for m in missing:
                 st.write(f"- {m}")
-        else:
-            st.success("✅ Semua file model tersedia")
-        
-        # Cek dependencies
-        st.write("**Dependencies:**")
-        st.write(f"- TensorFlow: {'✅ Tersedia' if TF_AVAILABLE else '❌ Tidak tersedia'}")
-        st.write(f"- PyTorch: {'✅ Tersedia' if TORCH_AVAILABLE else '❌ Tidak tersedia'}")
-        st.write(f"- OpenCV: {'✅ Tersedia' if CV2_AVAILABLE else '❌ Tidak tersedia'}")
-        st.write(f"- Joblib: {'✅ Tersedia' if JOBLIB_AVAILABLE else '❌ Tidak tersedia'}")
-    
-    # Load model terlebih dahulu
+        st.stop()
+
     ensure_model_loaded()
-    
+    if err_model:
+        st.error("Gagal load model/dependency.")
+        st.code(err_model)
+        st.stop()
+
     mode = st.radio("Mode input", ["Single / Multi Image", "ZIP Batch"], horizontal=True, index=0)
 
     left, right = st.columns([1.05, 1.0], gap="large")
     with left:
         st.markdown('<div class="card"><div class="cardTitle">📥 Input</div>', unsafe_allow_html=True)
         items = get_items(mode)
-        
         if not items:
-            st.info("📤 Upload gambar atau ZIP untuk memulai prediksi")
-            st.markdown("""
-            **Format yang didukung:**
-            - Gambar: JPG, JPEG, PNG
-            - ZIP: Arsip berisi gambar
-            """)
+            st.info("Upload gambar/ZIP untuk memulai.")
         else:
-            st.success(f"✅ {len(items)} gambar ditemukan")
             st.markdown(f"**Preview (maks {preview_limit} gambar)**")
             cols = st.columns(3)
             for i, (name, img) in enumerate(items[:preview_limit]):
                 with cols[i % 3]:
-                    # Resize untuk preview
-                    img_preview = img.copy()
-                    img_preview.thumbnail((200, 200))
-                    _img_show(img_preview, caption=name[:20] + "..." if len(name) > 20 else name)
-            
-            if len(items) > preview_limit:
-                st.info(f"📷 ... dan {len(items) - preview_limit} gambar lainnya")
-        
+                    _img_show(img, caption=name)
         st.markdown('</div>', unsafe_allow_html=True)
 
     with right:
         st.markdown('<div class="card"><div class="cardTitle">🧠 Output</div>', unsafe_allow_html=True)
-        
+        items = items if "items" in locals() else []
         if not items:
-            st.warning("⏳ Belum ada gambar untuk diprediksi")
+            st.warning("Belum ada input.")
         else:
-            # Tombol prediksi
-            if st.button("🚀 Jalankan Prediksi", type="primary", use_container_width=True):
-                with st.spinner("Memproses prediksi..."):
-                    st.session_state["scan_counter"] += len(items)
-                    
-                    rows = []
-                    risky = []
-                    progress_bar = st.progress(0)
-                    
-                    for idx, (name, img) in enumerate(items):
-                        # Update progress
-                        progress_bar.progress((idx + 1) / len(items))
-                        
-                        # Prediksi
-                        out = predict_one(img)
-                        
-                        rows.append({
-                            "filename": name,
-                            "pred": out["pred_label"],
-                            "confidence": round(out["confidence"], 4),
-                            "margin": round(out["margin"], 4),
-                            "low_conf": bool(out["low_conf"]),
-                            "ambiguous": bool(out["ambiguous"]),
-                            "top3": ", ".join([f"{k}:{p:.3f}" for k, p in out["top3"]]) if show_top3 else ""
-                        })
-                        
-                        if out["low_conf"] or out["ambiguous"]:
-                            risky.append((name, img, out))
-                    
-                    progress_bar.empty()
-                    
-                    # Tampilkan hasil
-                    df = pd.DataFrame(rows).sort_values(["confidence", "margin"], ascending=False)
-                    low_cnt = int(df["low_conf"].sum())
-                    amb_cnt = int(df["ambiguous"].sum())
+            st.session_state["scan_counter"] += len(items)
 
+            rows = []
+            risky = []
+            for name, img in items:
+                out = predict_one(img)
+                rows.append({
+                    "filename": name,
+                    "pred": out["pred_label"],
+                    "confidence": round(out["confidence"], 4),
+                    "margin": round(out["margin"], 4),
+                    "low_conf": bool(out["low_conf"]),
+                    "ambiguous": bool(out["ambiguous"]),
+                    "top3": ", ".join([f"{k}:{p:.3f}" for k, p in out["top3"]]) if show_top3 else ""
+                })
+                if out["low_conf"] or out["ambiguous"]:
+                    risky.append((name, img, out))
+
+            df = pd.DataFrame(rows).sort_values(["confidence", "margin"], ascending=False)
+            low_cnt = int(df["low_conf"].sum())
+            amb_cnt = int(df["ambiguous"].sum())
+
+            st.markdown(
+                f"""
+<div class="kpi">
+  <div class="k"><div class="t">Model</div><div class="v">{model_choice}</div></div>
+  <div class="k"><div class="t">Total</div><div class="v">{len(df)}</div></div>
+  <div class="k"><div class="t">Low confidence</div><div class="v">{low_cnt}</div></div>
+  <div class="k"><div class="t">Ambiguous</div><div class="v">{amb_cnt}</div></div>
+</div>
+""",
+                unsafe_allow_html=True
+            )
+            st.write("")
+            _df_show(df)
+
+            # Distribusi prediksi
+            vc = df["pred"].value_counts().reindex(CLASS_LABELS, fill_value=0).reset_index()
+            vc.columns = ["Kelas", "Jumlah"]
+            fig = px.bar(vc, x="Kelas", y="Jumlah", color="Kelas",
+                         color_discrete_map=CLASS_COLOR)
+            fig.update_layout(
+                height=300, margin=dict(l=10,r=10,t=10,b=10),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=TEXT),
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)"),
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            csv = df.to_csv(index=False).encode("utf-8")
+            st.download_button("⬇️ Download CSV", data=csv, file_name="prediksi_sawit_scope.csv", mime="text/csv", use_container_width=True)
+
+            if show_insight:
+                st.markdown("---")
+                st.markdown("#### 🔍 Insight Risiko (tanpa ground-truth)")
+                if not risky:
+                    st.markdown('<span class="tag tag-ok">✅ Prediksi stabil (confidence & margin aman)</span>', unsafe_allow_html=True)
+                else:
+                    risky.sort(key=lambda t: (t[2]["margin"], t[2]["confidence"]))
+                    name0, img0, out0 = risky[0]
+                    st.markdown('<span class="tag tag-danger">⚠️ Ada prediksi berisiko</span>', unsafe_allow_html=True)
+                    _img_show(img0, caption=f"Contoh paling ragu: {name0}")
+                    
                     st.markdown(
-                        f"""
-    <div class="kpi">
-      <div class="k"><div class="t">Model</div><div class="v">{model_choice}</div></div>
-      <div class="k"><div class="t">Total</div><div class="v">{len(df)}</div></div>
-      <div class="k"><div class="t">Low confidence</div><div class="v">{low_cnt}</div></div>
-      <div class="k"><div class="t">Ambiguous</div><div class="v">{amb_cnt}</div></div>
-    </div>
-    """,
+                        pred_badge(out0["pred_label"]),
                         unsafe_allow_html=True
                     )
-                    st.write("")
                     
-                    # Tampilkan tabel
-                    _df_show(df)
+                    st.write(
+                        f"**Confidence:** {out0['confidence']:.3f} | "
+                        f"**Margin (Top1–Top2):** {out0['margin']:.3f}"
+                    )          
+                    st.write("**Saran cepat:**")
+                    for tip in insight_tips(out0["top3"][0][0], out0["top3"][1][0] if len(out0["top3"]) > 1 else out0["top3"][0][0]):
+                        st.write(f"- {tip}")
 
-                    # Distribusi prediksi
-                    vc = df["pred"].value_counts().reindex(CLASS_LABELS, fill_value=0).reset_index()
-                    vc.columns = ["Kelas", "Jumlah"]
-                    fig = px.bar(vc, x="Kelas", y="Jumlah", color="Kelas",
-                                 color_discrete_map=CLASS_COLOR)
-                    fig.update_layout(
-                        height=300, margin=dict(l=10,r=10,t=10,b=10),
-                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(color=TEXT),
-                        xaxis=dict(showgrid=False),
-                        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)"),
-                        showlegend=False
-                    )
-                    st.plotly_chart(fig, use_container_width=True)
-
-                    # Download CSV
-                    csv = df.to_csv(index=False).encode("utf-8")
-                    st.download_button(
-                        "⬇️ Download CSV", 
-                        data=csv, 
-                        file_name="prediksi_sawit_scope.csv", 
-                        mime="text/csv", 
-                        use_container_width=True
-                    )
-
-                    # Insight
-                    if show_insight and len(risky) > 0:
-                        st.markdown("---")
-                        st.markdown("#### 🔍 Insight Risiko")
-                        
-                        risky.sort(key=lambda t: (t[2]["margin"], t[2]["confidence"]))
-                        name0, img0, out0 = risky[0]
-                        
-                        st.markdown('<span class="tag tag-danger">⚠️ Ada prediksi berisiko</span>', unsafe_allow_html=True)
-                        
-                        col_img, col_info = st.columns([1, 2])
-                        with col_img:
-                            img0.thumbnail((150, 150))
-                            _img_show(img0, caption=f"Contoh: {name0[:15]}...")
-                        
-                        with col_info:
-                            st.markdown(pred_badge(out0["pred_label"]), unsafe_allow_html=True)
-                            st.write(f"**Confidence:** {out0['confidence']:.3f}")
-                            st.write(f"**Margin (Top1–Top2):** {out0['margin']:.3f}")
-                            
-                            st.write("**Saran perbaikan:**")
-                            tips = insight_tips(
-                                out0["top3"][0][0] if out0["top3"] else "",
-                                out0["top3"][1][0] if len(out0["top3"]) > 1 else out0["top3"][0][0] if out0["top3"] else ""
-                            )
-                            for tip in tips:
-                                st.write(f"- {tip}")
-            
-            else:
-                st.info("👆 Klik tombol 'Jalankan Prediksi' untuk memulai")
-        
         st.markdown('</div>', unsafe_allow_html=True)
 
 
 # =========================================================
-# PAGE: BATCH - FIXED
+# PAGE: BATCH
 # =========================================================
 elif nav == "📦 Prediksi Massal":
     st.markdown('<div class="card"><div class="cardTitle">📦 Batch Inspector</div>'
                 '<div class="small">Upload banyak gambar/ZIP → rekap hasil → download CSV.</div></div>',
                 unsafe_allow_html=True)
     st.write("")
-    
-    # Load model
+
+    if not MODEL_READY:
+        st.error("Model/dependency belum siap untuk inferensi batch.")
+        if missing:
+            for m in missing:
+                st.write(f"- {m}")
+        st.stop()
+
     ensure_model_loaded()
-    
+    if err_model:
+        st.error("Gagal load model/dependency.")
+        st.code(err_model)
+        st.stop()
+
     batch_mode = st.radio("Pilih mode batch", ["Multi Image", "ZIP Batch"], index=1, horizontal=True)
     items: List[Tuple[str, Image.Image]] = []
 
@@ -1462,89 +1243,67 @@ elif nav == "📦 Prediksi Massal":
             items = extract_images_from_zip(zf.read())
 
     if not items:
-        st.info("📤 Upload gambar atau ZIP untuk memulai batch prediction")
+        st.info("Upload dulu agar muncul hasil batch.")
         st.stop()
-    
+
+    st.session_state["scan_counter"] += len(items)
+
     st.markdown('<div class="card"><div class="cardTitle">🖼️ Preview</div>', unsafe_allow_html=True)
     cols = st.columns(3)
     for i, (name, img) in enumerate(items[:preview_limit]):
         with cols[i % 3]:
-            img_preview = img.copy()
-            img_preview.thumbnail((200, 200))
-            _img_show(img_preview, caption=name[:20] + "..." if len(name) > 20 else name)
-    
-    if len(items) > preview_limit:
-        st.info(f"📷 ... dan {len(items) - preview_limit} gambar lainnya")
-    
+            _img_show(img, caption=name)
     st.markdown('</div>', unsafe_allow_html=True)
     st.write("")
-    
-    # Tombol prediksi batch
-    if st.button("🚀 Jalankan Prediksi Batch", type="primary", use_container_width=True):
-        with st.spinner(f"Memproses {len(items)} gambar..."):
-            st.session_state["scan_counter"] += len(items)
-            
-            rows = []
-            progress_bar = st.progress(0)
-            
-            for idx, (name, img) in enumerate(items):
-                progress_bar.progress((idx + 1) / len(items))
-                out = predict_one(img)
-                rows.append({
-                    "filename": name,
-                    "pred": out["pred_label"],
-                    "confidence": round(out["confidence"], 4),
-                    "margin": round(out["margin"], 4),
-                    "low_conf": bool(out["low_conf"]),
-                    "ambiguous": bool(out["ambiguous"]),
-                    "top3": ", ".join([f"{k}:{p:.3f}" for k, p in out["top3"]]) if show_top3 else ""
-                })
-            
-            progress_bar.empty()
-            
-            df = pd.DataFrame(rows).sort_values(["confidence","margin"], ascending=False)
-            low_cnt = int(df["low_conf"].sum())
-            amb_cnt = int(df["ambiguous"].sum())
 
-            st.markdown('<div class="card"><div class="cardTitle">📋 Ringkasan</div>', unsafe_allow_html=True)
-            st.markdown(
-                f"""
-    <div class="kpi">
-      <div class="k"><div class="t">Total</div><div class="v">{len(df)}</div></div>
-      <div class="k"><div class="t">Low confidence</div><div class="v">{low_cnt}</div></div>
-      <div class="k"><div class="t">Ambiguous</div><div class="v">{amb_cnt}</div></div>
-      <div class="k"><div class="t">Model</div><div class="v">{model_choice}</div></div>
-    </div>
-    """,
-                unsafe_allow_html=True
-            )
-            st.write("")
-            _df_show(df)
+    rows = []
+    for name, img in items:
+        out = predict_one(img)
+        rows.append({
+            "filename": name,
+            "pred": out["pred_label"],
+            "confidence": round(out["confidence"], 4),
+            "margin": round(out["margin"], 4),
+            "low_conf": bool(out["low_conf"]),
+            "ambiguous": bool(out["ambiguous"]),
+            "top3": ", ".join([f"{k}:{p:.3f}" for k, p in out["top3"]]) if show_top3 else ""
+        })
 
-            # Chart distribusi
-            vc = df["pred"].value_counts().reindex(CLASS_LABELS, fill_value=0).reset_index()
-            vc.columns = ["Kelas", "Jumlah"]
-            fig = px.bar(vc, x="Kelas", y="Jumlah", color="Kelas", color_discrete_map=CLASS_COLOR)
-            fig.update_layout(
-                height=280, margin=dict(l=10,r=10,t=10,b=10),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color=TEXT), showlegend=False,
-                xaxis=dict(showgrid=False),
-                yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)")
-            )
-            st.plotly_chart(fig, use_container_width=True)
+    df = pd.DataFrame(rows).sort_values(["confidence","margin"], ascending=False)
+    low_cnt = int(df["low_conf"].sum())
+    amb_cnt = int(df["ambiguous"].sum())
 
-            # Download
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇️ Download CSV Batch", 
-                data=csv, 
-                file_name="prediksi_batch_sawit.csv", 
-                mime="text/csv", 
-                use_container_width=True
-            )
+    st.markdown('<div class="card"><div class="cardTitle">📋 Ringkasan</div>', unsafe_allow_html=True)
+    st.markdown(
+        f"""
+<div class="kpi">
+  <div class="k"><div class="t">Total</div><div class="v">{len(df)}</div></div>
+  <div class="k"><div class="t">Low confidence</div><div class="v">{low_cnt}</div></div>
+  <div class="k"><div class="t">Ambiguous</div><div class="v">{amb_cnt}</div></div>
+  <div class="k"><div class="t">Model</div><div class="v">{model_choice}</div></div>
+</div>
+""",
+        unsafe_allow_html=True
+    )
+    st.write("")
+    _df_show(df)
 
-            st.markdown('</div>', unsafe_allow_html=True)
+    vc = df["pred"].value_counts().reindex(CLASS_LABELS, fill_value=0).reset_index()
+    vc.columns = ["Kelas", "Jumlah"]
+    fig = px.bar(vc, x="Kelas", y="Jumlah", color="Kelas", color_discrete_map=CLASS_COLOR)
+    fig.update_layout(
+        height=280, margin=dict(l=10,r=10,t=10,b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=TEXT), showlegend=False,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.08)")
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    csv = df.to_csv(index=False).encode("utf-8")
+    st.download_button("⬇️ Download CSV Batch", data=csv, file_name="prediksi_batch_sawit.csv", mime="text/csv", use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 # =========================================================
@@ -1558,91 +1317,74 @@ elif nav == "⚔️ Perbandingan Model":
 
     up = st.file_uploader("Upload 1 gambar untuk arena", type=["jpg","jpeg","png"])
     if not up:
-        st.info("Upload gambar untuk memulai arena perbandingan model.")
+        st.info("Upload dulu untuk memulai arena.")
         st.stop()
 
     img = Image.open(up).convert("RGB")
-    st.markdown('<div class="card"><div class="cardTitle">🖼️ Gambar Uji</div>', unsafe_allow_html=True)
-    _img_show(img, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
-    
+    _img_show(img, caption="Arena Image")
     st.write("")
 
-    if st.button("⚔️ START ARENA", type="primary", use_container_width=True):
-        with st.spinner("Membandingkan model..."):
-            results_arena = []
-            
-            # Coba load semua model yang tersedia
-            models_to_test = [
-                ("XGBoost + HSV Color", "xgb"),
-                ("EfficientNet-B0 + LoRA", "tf"),
-                ("MaxViT-T + LoRA", "torch"),
-            ]
-            
-            for model_name, model_type in models_to_test:
-                try:
-                    if model_type == "xgb":
-                        # Cek file XGB
-                        if require_files([FILES["xgb_model"], FILES["xgb_meta"]]) == []:
-                            xgb_temp, meta_temp = load_xgb()
-                            label, conf, prob, cn = xgb_predict(img, xgb_temp, meta_temp)
-                            results_arena.append((model_name, safe_label(label), float(conf), float(margin_top1_top2(prob))))
-                        else:
-                            results_arena.append((model_name, "Model tidak tersedia", 0.0, 0.0))
-                            
-                    elif model_type == "tf":
-                        # Cek file EffNet
-                        if require_files([FILES["effnet"], FILES["class_names"]]) == []:
-                            eff_temp = load_effnet()
-                            label, conf, prob = effnet_predict(img, eff_temp, class_names_global)
-                            results_arena.append((model_name, safe_label(label), float(conf), float(margin_top1_top2(prob))))
-                        else:
-                            results_arena.append((model_name, "Model tidak tersedia", 0.0, 0.0))
-                            
-                    elif model_type == "torch":
-                        # Cek file MaxViT
-                        if require_files([FILES["maxvit"]]) == []:
-                            mv_temp, mv_classes_temp, mv_img_temp = load_maxvit()
-                            label, conf, prob = maxvit_predict(img, mv_temp, mv_classes_temp, mv_img_temp)
-                            results_arena.append((model_name, safe_label(label), float(conf), float(margin_top1_top2(prob))))
-                        else:
-                            results_arena.append((model_name, "Model tidak tersedia", 0.0, 0.0))
-                            
-                except Exception as e:
-                    st.warning(f"Model {model_name} error: {str(e)}")
-                    results_arena.append((model_name, f"ERROR: {str(e)[:30]}...", 0.0, 0.0))
+    # try load all models that exist
+    arena_models = [
+        ("XGBoost + HSV Color", "xgb"),
+        ("EfficientNet-B0 + LoRA", "tf"),
+        ("MaxViT-T + LoRA", "torch"),
+    ]
 
-            st.session_state["scan_counter"] += 3
+    if st.button("⚔️ START ARENA", use_container_width=True):
+        results_arena = []
 
-            # Tampilkan hasil
-            df = pd.DataFrame(results_arena, columns=["Model", "Prediksi", "Confidence", "Margin"])
-            st.markdown('<div class="card"><div class="cardTitle">🥊 Hasil Arena</div>', unsafe_allow_html=True)
-            _df_show(df)
-            st.markdown('</div>', unsafe_allow_html=True)
+        # XGB
+        try:
+            if require_files([FILES["xgb_model"], FILES["xgb_meta"]]) == []:
+                xgb, meta = load_xgb()
+                label, conf, prob, cn = xgb_predict(img, xgb, meta)
+                results_arena.append(("XGBoost + HSV Color", safe_label(label), float(conf), float(margin_top1_top2(prob))))
+        except Exception as e:
+            results_arena.append(("XGBoost + HSV Color", "ERROR", 0.0, 0.0))
 
-            # Chart perbandingan
-            fig = go.Figure()
-            fig.add_trace(go.Bar(
-                x=df["Model"],
-                y=df["Confidence"],
-                marker=dict(color=[GOLD, ORANGE, RED]),
-                text=[f"{v:.3f}" for v in df["Confidence"]],
-                textposition="outside"
-            ))
-            fig.update_layout(
-                height=320, margin=dict(l=10,r=10,t=10,b=10),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color=TEXT),
-                yaxis=dict(range=[0,1], showgrid=True, gridcolor="rgba(255,255,255,0.08)"),
-                xaxis=dict(showgrid=False),
-                title="Confidence Score Comparison"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Kesimpulan
-            if len(df) > 0:
-                best_model = df.loc[df["Confidence"].idxmax()]
-                st.success(f"🏆 **Model terbaik untuk gambar ini:** {best_model['Model']} (Confidence: {best_model['Confidence']:.3f})")
+        # EffNet
+        try:
+            if require_files([FILES["effnet"], FILES["class_names"]]) == []:
+                eff = load_effnet()
+                label, conf, prob = effnet_predict(img, eff, class_names_global)
+                results_arena.append(("EfficientNet-B0 + LoRA", safe_label(label), float(conf), float(margin_top1_top2(prob))))
+        except Exception as e:
+            results_arena.append(("EfficientNet-B0 + LoRA", "ERROR", 0.0, 0.0))
+
+        # MaxViT
+        try:
+            if require_files([FILES["maxvit"]]) == []:
+                mv, mv_classes, mv_img = load_maxvit()
+                label, conf, prob = maxvit_predict(img, mv, mv_classes, mv_img)
+                results_arena.append(("MaxViT-T + LoRA", safe_label(label), float(conf), float(margin_top1_top2(prob))))
+        except Exception as e:
+            results_arena.append(("MaxViT-T + LoRA", "ERROR", 0.0, 0.0))
+
+        st.session_state["scan_counter"] += 3
+
+        df = pd.DataFrame(results_arena, columns=["Model", "Prediksi", "Confidence", "Margin"])
+        st.markdown('<div class="card"><div class="cardTitle">🥊 Hasil Arena</div>', unsafe_allow_html=True)
+        _df_show(df)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # chart
+        fig = go.Figure()
+        fig.add_trace(go.Bar(
+            x=df["Model"],
+            y=df["Confidence"],
+            marker=dict(color=[GOLD, ORANGE, RED]),
+            text=[f"{v:.3f}" for v in df["Confidence"]],
+            textposition="outside"
+        ))
+        fig.update_layout(
+            height=320, margin=dict(l=10,r=10,t=10,b=10),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color=TEXT),
+            yaxis=dict(range=[0,1], showgrid=True, gridcolor="rgba(255,255,255,0.08)"),
+            xaxis=dict(showgrid=False),
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # =========================================================
@@ -1739,79 +1481,6 @@ elif nav == "ℹ️ Informasi Proyek":
     st.markdown('<div class="card"><div class="cardTitle">4) Catatan Implementasi</div>', unsafe_allow_html=True)
     st.write("- Warna kelas konsisten: **Mentah=Hijau**, **Matang=Oranye**, **Busuk=Merah**.")
     st.write("- Semua chart dibuat dari angka/array → **tanpa gambar result**.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-# =========================================================
-# PAGE: SYSTEM INFO - NEW
-# =========================================================
-elif nav == "🔧 System Info":
-    st.markdown('<div class="card"><div class="cardTitle">🔧 System Information</div></div>', unsafe_allow_html=True)
-    st.write("")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown('<div class="card"><div class="cardTitle">📦 Python & Dependencies</div>', unsafe_allow_html=True)
-        st.write(f"**Python version:** {sys.version.split()[0]}")
-        st.write(f"**Streamlit:** {st.__version__}")
-        st.write(f"**NumPy:** {np.__version__}")
-        st.write(f"**Pandas:** {pd.__version__}")
-        st.write(f"**Pillow:** {Image.__version__}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<div class="card"><div class="cardTitle">🤖 ML Frameworks</div>', unsafe_allow_html=True)
-        if TF_AVAILABLE:
-            st.write(f"**TensorFlow:** ✅ {tf.__version__}")
-        else:
-            st.write("**TensorFlow:** ❌ Tidak tersedia")
-            
-        if TORCH_AVAILABLE:
-            st.write(f"**PyTorch:** ✅ {torch.__version__}")
-        else:
-            st.write("**PyTorch:** ❌ Tidak tersedia")
-            
-        st.write(f"**OpenCV:** {'✅ Tersedia' if CV2_AVAILABLE else '❌ Tidak tersedia'}")
-        st.write(f"**Joblib:** {'✅ Tersedia' if JOBLIB_AVAILABLE else '❌ Tidak tersedia'}")
-        st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.write("")
-    
-    # File system info
-    st.markdown('<div class="card"><div class="cardTitle">📁 File System</div>', unsafe_allow_html=True)
-    st.write(f"**Current directory:** {Path.cwd()}")
-    st.write(f"**Models directory:** {MODELS_DIR}")
-    
-    st.write("**File status:**")
-    for key, path in FILES.items():
-        exists = path.exists()
-        emoji = "✅" if exists else "❌"
-        st.write(f"- {emoji} {key}: {path.name} ({'Ada' if exists else 'Tidak ada'})")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-    
-    st.write("")
-    
-    # Troubleshooting
-    st.markdown('<div class="card"><div class="cardTitle">🛠️ Troubleshooting</div>', unsafe_allow_html=True)
-    
-    if st.button("🔄 Check System", use_container_width=True):
-        st.rerun()
-    
-    if st.button("📝 Create Sample Files", use_container_width=True):
-        # Buat file class_names.json sample
-        sample_class_names = ["unripe", "ripe", "rotten"]
-        with open(FILES["class_names"], "w") as f:
-            json.dump(sample_class_names, f)
-        st.success(f"✅ Created sample {FILES['class_names'].name}")
-    
-    st.markdown("""
-    **Jika ada masalah:**
-    1. Pastikan file model ada di folder `sawit_models/`
-    2. Install dependencies: `pip install tensorflow torch opencv-python joblib`
-    3. Restart aplikasi
-    """)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
