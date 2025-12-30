@@ -405,19 +405,15 @@ ALLOWED_IMG_EXT = {".jpg", ".jpeg", ".png"}
 
 
 # =========================================================
-# Small helpers (biar Streamlit future-proof dari warning use_container_width)
+# FIXED: Small helpers (simplified untuk compatibility)
 # =========================================================
 def _img_show(img, caption=None):
-    try:
-        st.image(img, caption=caption, width="stretch")
-    except TypeError:
-        st.image(img, caption=caption, use_container_width=True)
+    """Simple image display - fixed for Streamlit Cloud"""
+    st.image(img, caption=caption)
 
 def _df_show(df: pd.DataFrame):
-    try:
-        st.dataframe(df, width="stretch", hide_index=True)
-    except TypeError:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+    """Simple dataframe display - fixed for Streamlit Cloud"""
+    st.dataframe(df, hide_index=True)
 
 
 # =========================================================
