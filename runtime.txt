@@ -1,0 +1,4 @@
+# Buat runtime.txt
+@"
+python-3.10
+"@ | Out-File -FilePath runtime.txt -Encoding UTF8
